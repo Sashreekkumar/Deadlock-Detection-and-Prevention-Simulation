@@ -1,122 +1,123 @@
 # Deadlock Detection and Prevention Simulator
 
-A two-part project that demonstrates **deadlock** in a multi-process system, **detects** it with a
-resource-allocation graph (RAG), and **prevents** it with **resource ordering**.
+A two-part project demonstrating **deadlock creation, detection, recovery, and prevention** in a concurrent system. The project combines a Python-based resource-allocation graph (RAG) simulator with a FreeRTOS demonstration running on an ESP32 or in the Wokwi online simulator.
 
 | Part | Where it runs | Purpose |
-|------|---------------|---------|
-| Python simulator | Any PC | Deterministic, step-by-step simulation, graph drawing, multiple scenarios |
-| FreeRTOS demo | ESP32 (or Wokwi online simulator) | Same idea on a real RTOS with real tasks and mutexes |
+|---|---|---|
+| Python simulator | Any PC | Tick-based simulation, graph drawing, cycle detection, and multiple scenarios |
+| FreeRTOS demo | ESP32 or Wokwi | Demonstrates concurrent RTOS tasks, mutexes, deadlock detection, recovery, and resource-ordering prevention |
 
 ---
 
-## 1. What the code does, and why
+## 1. Project Objectives
 
-### 1.1 The problem: deadlock
+- Understand deadlocks in multitasking operating systems.
+- Represent resource allocation and requests using a resource-allocation graph.
+- Detect cycles and identify deadlocked processes.
+- Demonstrate timeout-based recovery after deadlock occurs.
+- Prevent circular wait through resource ordering.
+- Compare system behavior with and without prevention.
+- Demonstrate these concepts through Python and FreeRTOS.
 
-A **deadlock** is a state where a set of processes are all blocked forever, each waiting for a resource
-held by another process in the set.
+## 2. Theoretical Background
 
-The example used throughout the project:
+### 2.1 What is deadlock?
 
-```
+A **deadlock** occurs when a group of processes cannot proceed because each process is waiting for a resource held by another process in the group.
+
+The classic example used in this project is:
+
+```text
 P1 holds R1 and requests R2
 P2 holds R2 and requests R1
 ```
 
-Neither can continue: P1 waits for P2 to release R2, and P2 waits for P1 to release R1.
+P1 cannot proceed until P2 releases R2, while P2 cannot proceed until P1 releases R1.
 
-A deadlock needs **all four Coffman conditions** at the same time:
+### 2.2 The four Coffman conditions
 
-1. **Mutual exclusion** – a resource can be held by only one process at a time.
-2. **Hold and wait** – a process holds some resources while waiting for others.
-3. **No preemption** – resources cannot be forcibly taken away.
-4. **Circular wait** – there is a closed chain of processes, each waiting for a resource held by the next.
+Deadlock is associated with four necessary conditions:
 
-Breaking any one condition prevents deadlock. This project breaks **circular wait**.
+1. **Mutual exclusion:** A resource can be held by only one process at a time.
+2. **Hold and wait:** A process holds at least one resource while waiting for another.
+3. **No preemption:** A resource cannot be forcibly taken away from a process; in this demonstration, the tasks release their resources during recovery.
+4. **Circular wait:** A closed chain exists in which each process waits for a resource held by the next process.
 
-### 1.2 The model: resource-allocation graph (RAG)
+This project prevents deadlock by breaking the **circular-wait condition** through a global resource-acquisition order.
 
-The system state is stored as a directed graph with two kinds of nodes and two kinds of edges:
+### 2.3 Resource-allocation graph (RAG)
 
-| Edge | Direction | Meaning |
-|------|-----------|---------|
-| Request edge | `P -> R` | Process P is waiting for resource R |
-| Assignment edge | `R -> P` | Resource R is currently held by process P |
+The resource-allocation graph represents processes and resources using directed edges.
 
-For the example above the graph is:
+| Edge | Meaning |
+|---|---|
+| `P -> R` | Process P requests or waits for resource R |
+| `R -> P` | Resource R is allocated to process P |
 
-```
-P1 -> R2 -> P2 -> R1 -> P1        (a cycle)
-```
+The classic deadlock creates the following cycle:
 
-### 1.3 Detection: how the deadlock is found
-
-With **single-instance resources** (one copy of each resource), the rule is:
-
-> **A cycle in the RAG means a deadlock.**
-
-The detector runs a **depth-first search (DFS)** with three node colours (white = unvisited,
-grey = on the current path, black = finished). If the search reaches a grey node again, it has found a
-back edge, i.e. a cycle. The cycle is returned as a list such as `['P1','R2','P2','R1','P1']`, and the
-processes in it are the deadlocked ones.
-
-In Python the detector runs after every simulation tick. On the ESP32 a monitor task checks every 300 ms.
-
-### 1.4 Prevention: how the deadlock is avoided
-
-**Resource ordering** gives every resource a number (R1 = 1, R2 = 2, ...) and enforces one rule:
-
-> A process may request a resource only if its number is **higher** than every resource it already holds.
-
-In practice this means every process acquires resources in **ascending order**. P2, which naturally
-wants `R2` then `R1`, is made to acquire `R1` then `R2` instead.
-
-Why this works: a circular wait needs some process holding a *high* resource while waiting for a *low*
-one. The rule makes that impossible, so no cycle can ever form, and the circular-wait condition can
-never hold.
-
-### 1.5 What happens, step by step
-
-**Python (`classic` scenario, no prevention)**
-
-```
-t=01  P1 acquires R1
-t=01  P2 acquires R2
-t=02  P1 requests R2 (held by P2) -> BLOCKED
-t=02  P2 requests R1 (held by P1) -> BLOCKED
-t=02  DEADLOCK DETECTED: P1 -> R2 -> P2 -> R1 -> P1
+```text
+P1 -> R2 -> P2 -> R1 -> P1
 ```
 
-**Python (`classic` scenario, with prevention)**
+P1 waits for R2, which is held by P2. P2 waits for R1, which is held by P1.
 
+For the single-instance resources in this scenario, a cycle indicates deadlock. With multiple instances of a resource type, a cycle alone is not generally sufficient to prove deadlock.
+
+### 2.4 Deadlock detection
+
+**Python simulator**
+
+The Python detector uses depth-first search (DFS) with three node states:
+
+- White: unvisited.
+- Grey: currently on the DFS path.
+- Black: completely explored.
+
+If DFS reaches a grey node again, it has found a cycle. The cycle may be reported as:
+
+```python
+['P1', 'R2', 'P2', 'R1', 'P1']
 ```
-t=00  P2: ordering applied ['R2','R1'] -> ['R1','R2']
-t=01  P1 acquires R1
-t=01  P2 requests R1 (held by P1) -> BLOCKED     (waiting, but no cycle)
-...   P1 finishes and releases everything, then P2 gets R1 and R2 and finishes
-      All processes completed - no deadlock
+
+DFS cycle detection has time complexity \(O(V+E)\), where \(V\) is the number of vertices and \(E\) is the number of edges.
+
+**FreeRTOS demonstration**
+
+FreeRTOS does not automatically detect arbitrary application-level deadlocks. The sketch maintains its own resource-allocation information:
+
+- `holderOf[]`: Records the process holding each resource.
+- `waitingFor[]`: Records the resource each process is waiting for.
+
+A monitor task checks the recorded relationships approximately every 300 ms and reports a cycle when it detects one.
+
+### 2.5 Deadlock prevention using resource ordering
+
+Each resource is assigned a rank:
+
+```text
+R1 < R2 < R3 < ...
 ```
 
-**FreeRTOS (ESP32)**
+A process may request a resource only if its rank is higher than every resource it already holds. In other words, all processes must acquire resources in ascending order.
 
-- **Phase A – no prevention.** Tasks P1 and P2 start each round together (an event-group barrier),
-  take their first mutex, wait 500 ms, then try to take the second one. They deadlock. The monitor task
-  detects the cycle and prints it. The tasks use a **timeout** on the second mutex (3 s), so they
-  release the first resource and back off (recovery). This repeats for 3 rounds.
-- **Phase B – prevention.** The monitor switches on resource ordering. Both tasks now take R1 then R2.
-  One of them simply waits for the other, and all 3 rounds complete with no deadlock.
-- A final `=== SUMMARY ===` line is printed.
+For example:
 
-> Note: the timeout in Phase A is a **recovery** mechanism, not prevention. Prevention is the ordering
-> rule in Phase B.
-
----
-
-## 2. Project layout and what each file does
-
+```text
+Original order for P2: R2 -> R1
+Enforced order for P2: R1 -> R2
 ```
-deadlock_sim/
+
+This prevents a process holding a higher-ranked resource from waiting for a lower-ranked resource. Therefore, a circular wait cannot form as long as all relevant resource acquisitions obey the global ordering rule.
+
+**Important distinction:** A timeout is a recovery mechanism, not a prevention mechanism. Phase A permits deadlock and recovers from it; Phase B prevents circular wait through resource ordering.
+
+## 3. Project Structure
+
+The project can be organized as follows:
+
+```text
+Deadlock-Detection-Prevention/
 ├── README.md
 ├── python/
 │   ├── main.py
@@ -125,158 +126,335 @@ deadlock_sim/
 │   ├── prevention.py
 │   ├── simulator.py
 │   ├── scenarios.py
-│   └── visualize.py
-└── freertos_esp32/
-    └── freertos_esp32.ino
+│   ├── visualize.py
+│   └── output/
+├── freertos_esp32/
+│   └── freertos_esp32.ino
+└── screenshots/
+    ├── deadlock-detection.png
+    ├── deadlock-recovery.png
+    ├── resource-ordering.png
+    └── final-summary.png
 ```
 
-### Python files
+For Wokwi, the FreeRTOS sketch can be pasted into the default `sketch.ino` file. If you keep the sketch at the repository root instead, adjust the structure accordingly.
 
-| File | Role |
-|------|------|
-| `graph.py` | The `RAG` class. Stores which process holds which resource (assignment edges) and which process waits for which (request edges). Provides `assign`, `release`, `request`, `holder`, `held_by`, `adjacency`, `edges`. |
-| `detector.py` | `find_cycle(rag)`: DFS cycle detection. Also `deadlocked_processes(cycle)` and `format_cycle(cycle)` for printing. |
-| `prevention.py` | The resource-ordering policy: `rank(r)` (number in the resource name), `order_needs(needs)` (sort ascending), `violates(held, r)` (check the ordering rule). |
-| `simulator.py` | The tick-based, round-robin simulator. Each process runs the program *acquire all needs, work 2 ticks, release all in reverse*. Grants free resources, blocks processes on busy ones, runs the detector after every tick, and stops on deadlock or completion. Applies ordering when prevention mode is on. |
-| `scenarios.py` | The test cases (`classic`, `chain3`, `safe`). Each process lists the resources it needs in its natural order. Add your own here. |
-| `visualize.py` | Draws the RAG with matplotlib (processes = circles, resources = squares, dashed = request, solid = assignment, **red = cycle**). Optional: skipped automatically if matplotlib is missing. |
-| `main.py` | Command-line entry point. Runs the chosen scenarios and modes, prints the timeline log, saves graph images to `output/`, and prints a summary table. |
+### 3.1 Python files
 
-### FreeRTOS file
+| File | Responsibility |
+|---|---|
+| `graph.py` | Implements the `RAG` class and stores assignment and request edges. Provides `assign`, `release`, `request`, `holder`, `held_by`, `adjacency`, and `edges`. |
+| `detector.py` | Implements `find_cycle(rag)`, `deadlocked_processes(cycle)`, and `format_cycle(cycle)`. |
+| `prevention.py` | Implements resource-ordering helpers such as `rank(r)`, `order_needs(needs)`, and `violates(held, r)`. |
+| `simulator.py` | Runs the tick-based, round-robin simulation. Processes acquire resources, perform work, release resources, and are checked for deadlock. |
+| `scenarios.py` | Defines the `classic`, `chain3`, and `safe` scenarios. |
+| `visualize.py` | Optionally draws resource-allocation graphs using Matplotlib. |
+| `main.py` | Command-line entry point that runs scenarios, prints timelines, saves graph images, and displays summary results. |
 
-| File | Role |
-|------|------|
-| `freertos_esp32.ino` | The whole ESP32 demo in one sketch. Key parts below. |
+### 3.2 FreeRTOS components
 
-Key parts of the sketch:
+| Component | Responsibility |
+|---|---|
+| `resMutex[]` | Represents R1 and R2 using FreeRTOS mutexes. |
+| `holderOf[]`, `waitingFor[]` | Store ownership and waiting information for the application's resource-allocation graph. |
+| `acquire()` | Logs requests, records waiting state, applies timeouts, and enforces resource ordering during prevention. |
+| `releaseRes()` | Updates resource ownership and releases the corresponding mutex. |
+| `procTask` | Implements the P1 and P2 tasks. |
+| `monitorTask` | Checks the graph, reports cycles, enables prevention after three detected deadlocks, and prints the final summary. |
+| `xEventGroupSync()` | Synchronizes task starts at round boundaries to make the initial deadlock scenario reproducible. |
 
-| Part | What it does |
-|------|--------------|
-| `resMutex[]` | The resources R1, R2 as FreeRTOS mutexes |
-| `holderOf[]`, `waitingFor[]` | A hand-built RAG (FreeRTOS has no built-in deadlock detection) |
-| `acquire()` / `releaseRes()` | Wrappers that update the graph, log events, apply a timeout, and enforce the ordering rule in prevention mode |
-| `procTask` | Tasks P1 and P2 (the "processes") |
-| `monitorTask` | Higher-priority task that snapshots the graph every 300 ms, detects cycles, switches to prevention after 3 deadlocks, and prints the summary |
-| `xEventGroupSync` | Barrier that makes both tasks start each round together so the deadlock is reproducible |
+## 4. Python Simulator: How to Run
 
----
+### 4.1 Requirements
 
-## 3. How to run
+- Python 3.8 or later.
+- Matplotlib is optional and used for graph image generation.
 
-### Python
-
-Requires Python 3.8+. Matplotlib is optional (graph images only).
+Navigate to the Python directory:
 
 ```bash
 cd python
-pip install matplotlib                          # optional
-python main.py                                  # all scenarios, both modes
-python main.py --scenario classic --mode detect
-python main.py --scenario chain3 --mode prevent --plot-all
-python main.py --no-plot                        # text only
 ```
+
+Install Matplotlib if graph visualization is required:
+
+```bash
+pip install matplotlib
+```
+
+Run all scenarios in both modes:
+
+```bash
+python main.py
+```
+
+Run the classic scenario without prevention:
+
+```bash
+python main.py --scenario classic --mode detect
+```
+
+Run the three-process scenario with prevention and graph output for every tick:
+
+```bash
+python main.py --scenario chain3 --mode prevent --plot-all
+```
+
+Run without graph output:
+
+```bash
+python main.py --no-plot
+```
+
+### 4.2 Command-line options
 
 | Option | Meaning |
-|--------|---------|
+|---|---|
 | `--scenario` | `classic`, `chain3`, `safe`, or `all` (default) |
-| `--mode` | `detect` (no prevention), `prevent` (resource ordering), or `both` (default) |
-| `--plot-all` | Save a graph image for every tick (default: only the final state) |
-| `--no-plot` | Skip image output |
+| `--mode` | `detect`, `prevent`, or `both` (default) |
+| `--plot-all` | Save a graph image for every tick rather than only the final state |
+| `--no-plot` | Disable graph image output |
 
-Images are written to `python/output/`.
+Graph images are saved to `python/output/`.
 
-### FreeRTOS on ESP32
+### 4.3 Test scenarios
 
-1. **Real board:** Arduino IDE, install the *esp32 by Espressif* board package, select your ESP32 board,
-   upload `freertos_esp32.ino`.
-2. **No hardware:** create a new ESP32 project on [wokwi.com](https://wokwi.com), paste the sketch into
-   `sketch.ino`, and press Play. No wiring is needed.
-3. Open the Serial Monitor at **115200 baud**.
+| Scenario | Resource requirements | Without prevention | With resource ordering |
+|---|---|---|---|
+| `classic` | P1: R1, R2; P2: R2, R1 | Designed to demonstrate a two-process deadlock | Expected to complete without deadlock |
+| `chain3` | P1: R1, R2; P2: R2, R3; P3: R3, R1 | Designed to demonstrate a three-process cycle | Expected to complete without deadlock |
+| `safe` | P1: R1, R2; P2: R1, R2 | Expected to complete; waiting does not necessarily imply deadlock | Expected to complete without deadlock |
 
-Expected output (shape; timings will vary):
+The exact tick counts depend on the supplied implementation and its scheduling order. Use the actual program output when documenting execution results.
 
+### 4.4 Example Python behavior
+
+Without prevention, the classic scenario is expected to produce a sequence similar to:
+
+```text
+P1 acquires R1
+P2 acquires R2
+P1 requests R2 -> blocked
+P2 requests R1 -> blocked
+DEADLOCK DETECTED: P1 -> R2 -> P2 -> R1 -> P1
 ```
-=== PHASE A: NO PREVENTION (deadlock expected) ===
-P1 requests R1 / P2 requests R2 / both acquired
-P1 requests R2 / P2 requests R1
-*** DEADLOCK DETECTED (#1): P1 -> R2 -> P2 -> R1 -> P1
-P1 TIMEOUT waiting for R2 ... recovery: releasing R1 and backing off
-... (repeats 3 times)
-=== PHASE B: RESOURCE ORDERING PREVENTION ENABLED ===
-P2 applies resource ordering: R1 before R2
-... rounds complete, no deadlock
-=== SUMMARY: Phase A deadlocks detected = 3, Phase B deadlocks = 0 ... ===
+
+With prevention, P2's resource order is changed:
+
+```text
+P2: ['R2', 'R1'] -> ['R1', 'R2']
+P1 acquires R1
+P2 waits for R1
+P1 acquires R2 and completes
+P1 releases its resources
+P2 acquires R1 and R2 and completes
 ```
 
----
+The second sequence contains waiting but no circular wait. A process waiting for a resource is not necessarily deadlocked.
 
-## 4. Test cases and expected results
+## 5. FreeRTOS Demonstration on ESP32 or Wokwi
 
-| Scenario | Description | No prevention | With ordering |
-|----------|-------------|---------------|---------------|
-| `classic` | P1: R1,R2 / P2: R2,R1 | **Deadlock** at tick 2 | Completes (11 ticks) |
-| `chain3` | P1: R1,R2 / P2: R2,R3 / P3: R3,R1 | **Deadlock** at tick 2 (3-process cycle) | Completes (16 ticks) |
-| `safe` | P1: R1,R2 / P2: R1,R2 | Completes (11 ticks) | Completes (11 ticks) |
+### 5.1 Running on Wokwi
 
-The `safe` case shows that waiting is not the same as deadlock: P2 is blocked for a while, but no cycle
-exists, so it eventually runs.
+1. Open [Wokwi](https://wokwi.com/) and create an ESP32 Arduino project.
+2. Paste the FreeRTOS implementation into `sketch.ino`.
+3. No external components or wiring are required.
+4. Click **Start Simulation**.
+5. Open the Serial Monitor and set the baud rate to **115200**.
+6. Let the simulation continue through Phase A and Phase B until the final summary appears.
 
----
+### 5.2 Running on a physical ESP32
 
-## 5. Adding your own scenario
+1. Install the Arduino IDE and the ESP32 board package by Espressif.
+2. Open the sketch and select the appropriate ESP32 board and serial port.
+3. Upload the sketch.
+4. Open the Serial Monitor at 115200 baud.
+5. Observe the deadlock detection, recovery, prevention, and summary messages.
 
-Edit `python/scenarios.py`:
+### 5.3 Phase A: No prevention
+
+During Phase A, P1 and P2 start each round together using an event-group barrier. P1 first acquires R1, while P2 first acquires R2. After a delay, each requests the resource held by the other.
+
+The monitor detects the circular dependency. The tasks then time out while waiting for their second mutex, release their first resources, and retry. The cycle is reproduced three times.
+
+### 5.4 Phase B: Resource ordering
+
+After three deadlocks have been detected and the cycle has cleared, the monitor enables resource ordering.
+
+Both tasks now acquire R1 before R2. One task may wait for the other, but the circular-wait condition cannot arise under this ordering policy. Each process completes three successful rounds, and the monitor prints the final summary.
+
+## 6. Experimental Results from Wokwi
+
+The following results were observed in the captured ESP32 Serial Monitor output.
+
+### 6.1 Deadlock detection
+
+The first deadlock was reported at approximately 2.102 seconds:
+
+```text
+[  1502 ms] P2 acquired R2
+[  1513 ms] P1 acquired R1
+[  2012 ms] P2 requests R1
+[  2013 ms] P1 requests R2
+[  2102 ms] *** DEADLOCK DETECTED (#1):
+             P1 -> R2 -> P2 -> R1 -> P1
+```
+
+This confirms that each task held one resource and waited for the resource held by the other.
+
+### 6.2 Deadlock recovery
+
+The first recovery sequence was:
+
+```text
+[  5012 ms] P2 TIMEOUT waiting for R1
+[  5013 ms] P1 TIMEOUT waiting for R2
+[  5013 ms] P2 recovery: releasing R2 and backing off
+[  5023 ms] P1 recovery: releasing R1 and backing off
+```
+
+Both tasks timed out, released their held resources, and backed off before retrying.
+
+### 6.3 Deadlock detection timestamps
+
+| Deadlock | Detection time in captured log | Observed outcome |
+|---|---:|---|
+| 1 | 2.102 s | Detected; timeout recovery followed |
+| 2 | 7.202 s | Detected; timeout recovery followed |
+| 3 | 12.302 s | Detected; timeout recovery followed |
+
+The timestamps are elapsed simulator times from the captured log. They may vary in subsequent runs.
+
+### 6.4 Prevention enabled
+
+After the third deadlock was recovered, the monitor enabled prevention:
+
+```text
+[ 15301 ms] === PHASE B: RESOURCE ORDERING PREVENTION ENABLED ===
+[ 16546 ms] P2 applies resource ordering: R1 before R2
+```
+
+P1 subsequently acquired both resources and entered its critical section:
+
+```text
+[ 17045 ms] P1 requests R2
+[ 17046 ms] P1 acquired R2
+[ 17046 ms] P1 in critical section (holds R1 and R2)
+[ 17346 ms] P1 released R2
+[ 17347 ms] P1 released R1
+[ 17347 ms] P1 round complete
+```
+
+P2 also completed its critical section using the same resource order. This process alternation continued until each task completed three rounds.
+
+### 6.5 Final observed summary
+
+The final Serial Monitor output reported:
+
+```text
+[ 22501 ms] === SUMMARY:
+Phase A deadlocks detected = 3,
+Phase B deadlocks = 0,
+rounds completed per process = 3 ===
+[ 22884 ms] P2 finished all rounds
+```
+
+The captured results are summarized below.
+
+| Measurement | Observed result |
+|---|---:|
+| Number of process tasks | 2 |
+| Number of shared resources | 2 |
+| Deadlocks detected in Phase A | 3 |
+| Deadlocks reported in Phase B | 0 |
+| Successful Phase B rounds completed by P1 | 3 |
+| Successful Phase B rounds completed by P2 | 3 |
+| Total successful Phase B process-rounds | 6 |
+
+**Interpretation:** The captured run demonstrates that the unordered acquisition pattern repeatedly produced a circular wait and that timeout recovery broke each occurrence. After resource ordering was enabled, both processes completed three rounds and the monitor reported zero deadlocks in Phase B.
+
+This is the result of the observed run, not a proof that every possible concurrent program is deadlock-free.
+
+## 7. Python and FreeRTOS Comparison
+
+| Feature | Python simulator | FreeRTOS demonstration |
+|---|---|---|
+| Execution model | Tick-based, deterministic simulation | Concurrent RTOS tasks |
+| Resources | Graph-modelled resources | FreeRTOS mutexes |
+| Deadlock detection | DFS cycle detection | Monitor examines recorded ownership and waiting relationships |
+| Recovery | Depends on the Python simulator's modeled behavior | Timeout, release, and retry |
+| Prevention | Reorders resource requirements | Enforces resource ordering in the acquisition wrapper |
+| Visualization | Optional graph images using Matplotlib | Serial Monitor logs |
+| Main purpose | Explore graph states and alternative scenarios | Demonstrate the concepts with RTOS synchronization primitives |
+
+The Python version helps explore different resource dependencies, while the FreeRTOS version demonstrates how concurrent tasks interact with mutexes.
+
+## 8. Adding a Python Scenario
+
+Edit `python/scenarios.py` and add an entry following the existing scenario structure:
 
 ```python
 "my_case": {
-    "desc": "my description",
-    "processes": {"P1": ["R1", "R3"], "P2": ["R3", "R2"], "P3": ["R2", "R1"]},
+    "desc": "Example three-process resource dependency",
+    "processes": {
+        "P1": ["R1", "R3"],
+        "P2": ["R3", "R2"],
+        "P3": ["R2", "R1"]
+    },
 },
 ```
 
-Then run `python main.py --scenario my_case`. Resource names must end in a number (R1, R2, ...) because
-the ordering rank is read from that number.
+Run it using:
 
----
+```bash
+python main.py --scenario my_case
+```
 
-## 6. Assumptions and limitations
+Resource names should end in a number, such as `R1`, `R2`, and `R3`, because the ordering policy derives resource ranks from the number in the name.
 
-- **Single-instance resources.** "Cycle = deadlock" is exact only in this case. With several instances
-  of a resource, a cycle is necessary but not sufficient; you would use the Banker's algorithm or a
-  wait-for-graph reduction instead.
-- **Fixed process programs.** Each process acquires everything it needs, works, then releases. There
-  are no dynamic request patterns.
-- **Round-robin ticks.** The Python scheduler gives each process one action per tick, in order P1, P2,
-  P3. Different scheduling could change the interleaving (and in some interleavings an unordered
-  scenario may not deadlock; the order used here exposes the deadlock reliably).
-- **Prevention has a cost.** Ordering can force a process to acquire a resource earlier than it needs
-  it, which can reduce concurrency. Choosing a sensible global order matters.
-- **ESP32 timings** (500 ms hold delay, 3 s timeout, 300 ms monitor period) are tuned for readable
-  output, not performance. The exact millisecond values in your log will differ from run to run.
-- **Detection in FreeRTOS is cooperative.** The monitor only sees what the `acquire()` wrapper records;
-  code that calls `xSemaphoreTake` directly would be invisible to it.
-- **Recovery vs prevention.** The timeout-and-release in Phase A recovers from a deadlock after it
-  happens. Resource ordering in Phase B stops it from happening at all.
+## 9. Assumptions and Limitations
 
----
+- **Single-instance resources:** The rule that a cycle implies deadlock applies to the single-instance scenario. With multiple resource instances, a cycle alone is not generally sufficient to establish deadlock.
+- **Fixed process programs:** The example processes follow predefined resource-acquisition sequences rather than arbitrary dynamic request patterns.
+- **Scheduling:** Different process interleavings can affect when a deadlock occurs. The Python scheduler follows its own tick and process-order rules.
+- **Prevention trade-off:** Resource ordering may reduce concurrency because a process can be required to acquire a resource earlier than it otherwise would.
+- **Simulation timings:** ESP32 delays and timeouts are selected to make behavior visible in Wokwi, not to benchmark real-time performance.
+- **Cooperative graph tracking:** The FreeRTOS monitor sees requests and ownership changes recorded by the sketch. Mutex operations that bypass the wrapper would not be represented correctly in its graph.
+- **Recovery versus prevention:** Timeouts recover from deadlocks after they occur. Resource ordering prevents circular wait when consistently followed.
+- **Scope of results:** The observed successful Phase B run validates this scenario and the implemented ordering policy, not every possible resource interaction in a larger system.
 
-## 7. Troubleshooting
+## 10. Troubleshooting
 
-| Problem | Fix |
-|---------|-----|
-| `ModuleNotFoundError: matplotlib` | `pip install matplotlib`, or run with `--no-plot` |
-| No images appear | Check the `python/output/` folder; images are saved, not displayed |
-| Nothing prints on ESP32 | Set the Serial Monitor to 115200 baud, press the board's reset/EN button |
-| Compile error on `freertos/...` headers | Make sure the board selected is an ESP32 (not Arduino Uno/Nano) |
-| Phase B never starts | Phase A must detect 3 deadlocks first; wait roughly 25 to 30 seconds |
+| Problem | Solution |
+|---|---|
+| `ModuleNotFoundError: matplotlib` | Run `pip install matplotlib`, or use `python main.py --no-plot`. |
+| Graph images do not appear in the terminal | Check `python/output/`; the supplied implementation saves graph images to files. |
+| No ESP32 output | Ensure the simulation is running and the Serial Monitor is set to 115200 baud. |
+| Compilation errors involving ESP32/FreeRTOS headers | Select an ESP32 board rather than an AVR-based Arduino Uno or Nano. |
+| Phase B never starts | Phase A must detect three deadlocks and the cycle must clear. Inspect the Serial Monitor for errors or stalled tasks. |
+| Final summary is missing | Let the simulation continue. If it remains stuck, inspect the event-group barrier and task-exit logic. |
 
----
+## 11. Screenshots and Report Evidence
 
-<!-- ## 8. Material to include in the report
+Store screenshots of the Wokwi Serial Monitor in the `screenshots/` directory.
 
-- The four Coffman conditions and which one is broken (circular wait).
-- The RAG model and the cycle-detection algorithm (DFS), with its complexity O(V + E).
-- Console output and graph images from the Python runs (deadlock case in red, prevented case).
-- The Serial Monitor log from the ESP32 showing Phase A (detection and recovery) and Phase B
-  (prevention).
-- The comparison table from section 4, and a short discussion of the limitations in section 6. -->
+| Screenshot | What it should show |
+|---|---|
+| `deadlock-detection.png` | The first `DEADLOCK DETECTED` message and the cycle `P1 -> R2 -> P2 -> R1 -> P1` |
+| `deadlock-recovery.png` | Timeout messages, resource releases, and backoff |
+| `resource-ordering.png` | The Phase B transition and P2's resource-ordering message |
+| `final-summary.png` | Three Phase A deadlocks, zero Phase B deadlocks, and three rounds completed per process |
+
+If you have run the Python simulator, also include representative RAG images from `python/output/` showing a deadlock cycle and a completed execution with prevention.
+
+### Suggested discussion for the project report
+
+Explain the four Coffman conditions, the RAG representation, and the cycle-detection algorithm. Then distinguish detection, recovery, and prevention. Use the Python graph images to illustrate resource dependencies and the Wokwi screenshots to document the actual RTOS behavior. Include the observed results table and discuss the assumptions and limitations.
+
+## 12. Conclusion
+
+This project demonstrates deadlock detection, recovery, and prevention using a Python simulator and a FreeRTOS-based ESP32 implementation.
+
+In the captured Wokwi experiment, the monitor detected three deadlocks while processes acquired resources in opposite orders. Timeout-based recovery released the held resources and allowed execution to continue. After resource ordering was enabled, both tasks acquired resources in the same order, completed three rounds each, and the final summary reported zero deadlocks in Phase B.
+
+The experiment illustrates how a resource-allocation graph can expose circular wait and how a consistent global resource order can prevent circular wait in the modeled system.
